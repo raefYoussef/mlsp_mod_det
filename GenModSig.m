@@ -1,9 +1,11 @@
-function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigPhaseErrors] = GenModSig(Fs, throughput)
+function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(agument, snrRange, phaseRotRange, jitterStd)
 % Function to generate and augment baseband modulated signals (PSK, QAM)
 %
 % Inputs:
-%   Fs              - Sampling frequency (Hz) (Multiple of 60)
-%   throughput      - Desired throughput (bits per second)(Multiple of 60)
+%   agument         - Flag to add data agumentation
+%   snrRange        - SNR Range [minSNR maxSNR]
+%   phaseRotRange   - Phase Rotation Range [minRotPhase maxRotPhase]
+%   jitterStd       - Jitter Standard Dev 
 % Outputs:
 %   Fs              - Actual Fs 
 %   sigIQ           - Signal IQ
@@ -11,23 +13,29 @@ function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigPhaseErrors] = GenMo
 %   sigClass        - Signal Class - ["2-PSK", "4-PSK", "8-PSK", "16-QAM", "32-QAM", "64-QAM"]
 %   sigSNR          - Signal SNR
 %   sigPhase        - Signal Phase
-%   sigPhaseErrors  - Array of applied phase errors for each symbol
+%   sigJitter       - Signal Jitter Std Dev
+
+    % Inputs
+    % snrRange = [25, 30];
+    % phaseRotRange = [0, pi/32];
+    % phaseErrRange = [-pi/180, pi/180]; % Reduced phase error range (-1 degrees to +1 degrees)
 
     % Constants
-    msgLen = 120; 
+    Fs = 120;
+    throughput = 60;
+    msgLen = 120*100; 
     modClasses = ["2-PSK", "4-PSK", "8-PSK", "16-QAM", "32-QAM", "64-QAM"];
-    phaseRange = [0, pi/2];
-    snrRange = [-30, 30];
-    phaseErrorRange = [-pi/36, pi/36]; % Reduced phase error range (-5 degrees to +5 degrees)
-
-    % Input Conditioning 
-    Fs = 60*ceil(Fs/60);
-    throughput = 60*ceil(throughput/60);
-
+    
     % Randomly select signal parameters
     sigClass = modClasses(randi(length(modClasses)));
-    sigSNR = snrRange(1) + (snrRange(2) - snrRange(1)) * rand;
-    sigPhase = phaseRange(1) + (phaseRange(2) - phaseRange(1)) * rand;
+
+    if agument
+        sigSNR = snrRange(1) + (snrRange(2) - snrRange(1)) * rand;
+        sigPhase = phaseRotRange(1) + (phaseRotRange(2) - phaseRotRange(1)) * rand;
+    else
+        sigSNR = 30;
+        sigPhase = 0;
+    end
 
     % Determine modulation order and bits per symbol
     switch sigClass
@@ -69,14 +77,15 @@ function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigPhaseErrors] = GenMo
     end
 
     % Generate variable phase errors for each symbol
-    sigPhaseErrors = phaseErrorRange(1) + (phaseErrorRange(2) - phaseErrorRange(1)) * rand(length(msg), 1);
-
-    % Apply phase errors to each symbol
-    sigSym = sigSym .* exp(1j .* sigPhaseErrors); % Rotate by variable phase error
+    if agument
+        phaseJitter = jitterStd * randn(size(sigSym));  % Gaussian distributed phase error
+        sigJitter = std(phaseJitter);
+        sigSym = sigSym .* exp(1j .* phaseJitter);      % Rotate by variable phase error
+    end
 
     % Pulse shaping using a raised cosine filter
     rollOff = 0.25; % Roll-off factor
-    span = 6; % Filter span in symbols
+    span = 2; % Filter span in symbols
     sps = Fs / symRate; % Samples per symbol
     rcosFilter = rcosdesign(rollOff, span, sps, 'sqrt'); % Raised cosine filter
 
@@ -87,6 +96,8 @@ function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigPhaseErrors] = GenMo
     sigIQ = conv(upsampledSigSym, rcosFilter, 'same');
 
     % Add Gaussian noise at specified SNR
-    sigIQ = awgn(sigIQ, sigSNR, 'measured'); % Add noise to the signal
+    if agument
+        sigIQ = awgn(sigIQ, sigSNR, 'measured'); % Add noise to the signal
+    end
 end
     
