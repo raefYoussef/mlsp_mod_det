@@ -1,11 +1,11 @@
-function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(agument, snrRange, phaseRotRange, jitterStd)
+function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(agument, snrRange, phaseRotRange, jitterStdRange)
 % Function to generate and augment baseband modulated signals (PSK, QAM)
 %
 % Inputs:
 %   agument         - Flag to add data agumentation
 %   snrRange        - SNR Range [minSNR maxSNR]
 %   phaseRotRange   - Phase Rotation Range [minRotPhase maxRotPhase]
-%   jitterStd       - Jitter Standard Dev 
+%   jitterStdRange  - Jitter Standard Dev Range [minJitter, maxJitter] 
 % Outputs:
 %   Fs              - Actual Fs 
 %   sigIQ           - Signal IQ
@@ -78,7 +78,8 @@ function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(
 
     % Generate variable phase errors for each symbol
     if agument
-        phaseJitter = jitterStd * randn(size(sigSym));  % Gaussian distributed phase error
+        jitter = jitterStdRange(1) + (jitterStdRange(2) - jitterStdRange(1)) * rand;
+        phaseJitter = jitter * randn(size(sigSym));  % Gaussian distributed phase error
         sigJitter = std(phaseJitter);
         sigSym = sigSym .* exp(1j .* phaseJitter);      % Rotate by variable phase error
     end

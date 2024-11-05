@@ -5,7 +5,7 @@ close all;
 numEx = 10;
 
 for exIndx = 1:numEx
-    [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(true, [25 40], [-pi/90, pi/90], .01); 
+    [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(true, [25 40], [-pi/2, pi/2], [0 .05]); 
     const = GenConst(sigIQ); 
     
     figure(); 
