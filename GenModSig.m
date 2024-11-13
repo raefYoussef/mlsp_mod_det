@@ -1,30 +1,37 @@
-function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(agument, snrRange, phaseRotRange, jitterStdRange)
-% Function to generate and augment baseband modulated signals (PSK, QAM)
+function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(agument, snrRange, phaseRotRange, jitterStdRange, modSubset)
+% Function to generate and augment baseband modulated signals (PSK, QAM, FSK)
 %
 % Inputs:
 %   agument         - Flag to add data agumentation
 %   snrRange        - SNR Range [minSNR maxSNR]
 %   phaseRotRange   - Phase Rotation Range [minRotPhase maxRotPhase]
 %   jitterStdRange  - Jitter Standard Dev Range [minJitter, maxJitter] 
+%   modSubset       - Cell array of modulation classes to include (e.g., {"2-PSK", "4-PSK", "16-QAM"})
+%
 % Outputs:
 %   Fs              - Actual Fs 
 %   sigIQ           - Signal IQ
 %   sigSym          - Signal Symbols
-%   sigClass        - Signal Class - ["2-PSK", "4-PSK", "8-PSK", "16-QAM", "32-QAM", "64-QAM"]
+%   sigClass        - Signal Class
 %   sigSNR          - Signal SNR
 %   sigPhase        - Signal Phase
 %   sigJitter       - Signal Jitter Std Dev
 
-    % Inputs
-    % snrRange = [25, 30];
-    % phaseRotRange = [0, pi/32];
-    % phaseErrRange = [-pi/180, pi/180]; % Reduced phase error range (-1 degrees to +1 degrees)
-
     % Constants
     Fs = 120;
     throughput = 60;
-    msgLen = 120*100; 
-    modClasses = ["2-PSK", "4-PSK", "8-PSK", "16-QAM", "32-QAM", "64-QAM"];
+    msgLen = 120 * 100; 
+    defaultModClasses = ["2-PSK", "4-PSK", "8-PSK", "16-QAM", "32-QAM", "64-QAM"];
+    
+    % Set modClasses to modSubset if provided, otherwise use default classes
+    if nargin < 5 || isempty(modSubset)
+        modClasses = defaultModClasses;
+    else
+        modClasses = intersect(defaultModClasses, string(modSubset)); % Ensure valid classes only
+        if isempty(modClasses)
+            error('No valid modulation classes specified in modSubset.');
+        end
+    end
     
     % Randomly select signal parameters
     sigClass = modClasses(randi(length(modClasses)));
@@ -40,7 +47,7 @@ function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(
     % Determine modulation order and bits per symbol
     switch sigClass
         case '2-PSK'
-            M = 2; % Modulation order
+            M = 2;
             bitsPerSymbol = 1;
         case '4-PSK'
             M = 4;
@@ -64,16 +71,15 @@ function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(
     % Calculate required symbol rate to achieve the target throughput
     symRate = throughput / bitsPerSymbol; % Symbol rate (symbols per second)
 
-    % Generate a random message symbols
+    % Generate random message symbols
     msg = randi([0 M-1], msgLen / bitsPerSymbol, 1);
 
-    % Modulate the message based on selected class
+    % Modulate based on the selected class
     if contains(sigClass, 'PSK')
         sigSym = pskmod(msg, M, sigPhase); % PSK modulation
-    else
+    elseif contains(sigClass, 'QAM')
         sigSym = qammod(msg, M); % QAM modulation
-        % Apply phase offset to the QAM symbols
-        sigSym = sigSym * exp(1j * sigPhase); % Rotate QAM symbols by sigPhase
+        sigSym = sigSym * exp(1j * sigPhase); % Rotate by phase
     end
 
     % Generate variable phase errors for each symbol
