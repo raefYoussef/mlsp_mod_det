@@ -9,6 +9,9 @@ function GenDataset(outputDir, classes, numSamplesPerClass, snrRange, phaseRotRa
 %   phaseRotRange      - Phase rotation range [minRot maxRot]
 %   jitterStdRange     - Jitter standard deviation range [minJitter maxJitter]
 
+    % Init RNG
+    rng(1);
+    
     % create dataset directory 
     if ~exist(outputDir, 'dir')
         mkdir(outputDir);
@@ -53,5 +56,5 @@ function GenDataset(outputDir, classes, numSamplesPerClass, snrRange, phaseRotRa
         end
     end
 
-    fprintf('Dataset generation complete.');
+    fprintf("Dataset generation complete.\n");
 end
