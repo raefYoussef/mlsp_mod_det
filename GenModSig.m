@@ -6,7 +6,7 @@ function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(
 %   snrRange        - SNR Range [minSNR maxSNR]
 %   phaseRotRange   - Phase Rotation Range [minRotPhase maxRotPhase]
 %   jitterStdRange  - Jitter Standard Dev Range [minJitter, maxJitter] 
-%   modSubset       - Cell array of modulation classes to include (e.g., {"2-PSK", "4-PSK", "16-QAM"})
+%   modSubset       - Cell array of modulation classes to include (e.g., {"PSK-02", "PSK-04", "QAM-16"})
 %
 % Outputs:
 %   Fs              - Actual Fs 
@@ -21,7 +21,7 @@ function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(
     Fs = 120;
     throughput = 60;
     msgLen = 120 * 100; 
-    defaultModClasses = ["2-PSK", "4-PSK", "8-PSK", "16-QAM", "32-QAM", "64-QAM"];
+    defaultModClasses = ["PSK-02", "PSK-04", "PSK-08", "QAM-08", "QAM-16", "QAM-32", "QAM-64"];
     
     % Set modClasses to modSubset if provided, otherwise use default classes
     if nargin < 5 || isempty(modSubset)
@@ -46,22 +46,25 @@ function [Fs, sigIQ, sigSym, sigClass, sigSNR, sigPhase, sigJitter] = GenModSig(
 
     % Determine modulation order and bits per symbol
     switch sigClass
-        case '2-PSK'
+        case 'PSK-02'
             M = 2;
             bitsPerSymbol = 1;
-        case '4-PSK'
+        case 'PSK-04'
             M = 4;
             bitsPerSymbol = 2;
-        case '8-PSK'
+        case 'PSK-08'
             M = 8;
             bitsPerSymbol = 3;
-        case '16-QAM'
+        case 'QAM-08'
+            M = 8;
+            bitsPerSymbol = 3;
+        case 'QAM-16'
             M = 16;
             bitsPerSymbol = 4;
-        case '32-QAM'
+        case 'QAM-32'
             M = 32;
             bitsPerSymbol = 5;
-        case '64-QAM'
+        case 'QAM-64'
             M = 64;
             bitsPerSymbol = 6;
         otherwise

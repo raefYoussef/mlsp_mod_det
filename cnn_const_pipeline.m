@@ -4,13 +4,13 @@ clear;
 
 %% Params
 datasetDir = "dataset";
-classes = {'2-PSK', '4-PSK', '8-PSK', '16-QAM', '32-QAM', '64-QAM'};
+classes = {'PSK-02', 'PSK-04', 'PSK-08', 'QAM-08', 'QAM-16', 'QAM-32', 'QAM-64'};
 
 visualizeNetwork = false;
 
 %% Generate Dataset (Optional if dataset exists)
-numSamplesPerClass = 300;
-snrRange = [20 40];
+numSamplesPerClass = 1000;
+snrRange = [0 40];
 phaseRotRange = [-pi/2, pi/2];
 jitterStdRange = [0 .05];
 

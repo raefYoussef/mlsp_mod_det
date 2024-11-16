@@ -3,7 +3,7 @@ function GenDataset(outputDir, classes, numSamplesPerClass, snrRange, phaseRotRa
 %
 % Inputs:
 %   outputDir          - Directory to save generated data
-%   classes            - Cell array of modulation classes (e.g., {"2-PSK", "4-PSK", "16-QAM"})
+%   classes            - Cell array of modulation classes (e.g., {"PSK-02", "PSK-04", "QAM-16"})
 %   numSamplesPerClass - Number of samples to generate for each modulation class
 %   snrRange           - SNR range [minSNR maxSNR]
 %   phaseRotRange      - Phase rotation range [minRot maxRot]
