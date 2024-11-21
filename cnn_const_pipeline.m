@@ -9,7 +9,7 @@ classes = {'PSK-02', 'PSK-04', 'PSK-08', 'QAM-08', 'QAM-16', 'QAM-32', 'QAM-64'}
 visualizeNetwork = false;
 
 %% Generate Dataset (Optional if dataset exists)
-numSamplesPerClass = 1000;
+numSamplesPerClass = 300;
 snrRange = [0 40];
 phaseRotRange = [-pi/2, pi/2];
 jitterStdRange = [0 .05];
@@ -40,22 +40,19 @@ for i = 1:numSamp
     
     % SNR 
     snrMatch = regexp(filePath, snrPattern, 'tokens', 'once');
-    
     if ~isempty(snrMatch)
         snrValues(i) = str2double(snrMatch{1});
     end
 
     % Jitter
     jitterMatch = regexp(filePath, jitterPattern, 'tokens', 'once');
-    
     if ~isempty(jitterMatch)
         jitterValues(i) = str2double(jitterMatch{1});
     end
 
     % Phase
     phaseMatch = regexp(filePath, phasePattern, 'tokens', 'once');
-    
-    if ~isempty(jitterMatch)
+    if ~isempty(phaseMatch)
         phaseValues(i) = str2double(phaseMatch{1});
     end
 end
@@ -63,64 +60,213 @@ end
 % Combine all metadata
 metadataTable = table(imds.Files, imds.Labels, snrValues, jitterValues, phaseValues, 'VariableNames', {'FilePath', 'Label', 'SNR', 'Jitter', 'Phase'});
 
-%% Split Dataset into Train/Validation
+%% Combined Datastore
+% Split images datastore
 [imdsTrain, imdsValid] = splitEachLabel(imds, 0.8, 'randomized');
+
+% Split the metadata based on the indices
+trainMetadata = metadataTable(1:round(0.8 * height(metadataTable)), :);
+validMetadata = metadataTable(round(0.8 * height(metadataTable)) + 1:end, :);
+
+trainMetadata.Label = double(trainMetadata.Label);
+validMetadata.Label = double(validMetadata.Label);
+
+% Create array datastores for metadata
+trainMetadataDs = arrayDatastore(trainMetadata{:, {'Label', 'SNR', 'Jitter', 'Phase'}});
+validMetadataDs = arrayDatastore(validMetadata{:, {'Label', 'SNR', 'Jitter', 'Phase'}});
+
+% Combine imageDatastore and metadata datastore
+combTrainDs = combine(imdsTrain, trainMetadataDs);
+combValidDs = combine(imdsValid, validMetadataDs);
 
 %% Define CNN Architecture
 inputSize = [size(readimage(imdsTrain,1),1), size(readimage(imdsTrain,1),2), 1]; % Adjust based on image size
+numClasses = numel(unique(imds.Labels));
 
-% CNN for classification
-layers = [
-    imageInputLayer(inputSize)
-    convolution2dLayer(3, 16, 'Padding', 'same')
-    batchNormalizationLayer
-    reluLayer
-    maxPooling2dLayer(2, 'Stride', 2)
+% Two-headed CNN architecture for classification and regression
+backboneLayers = [
+    imageInputLayer(inputSize, 'Name', 'input')
+    convolution2dLayer(3, 16, 'Padding', 'same', 'Name', 'conv1')
+    batchNormalizationLayer('Name', 'bn1')
+    reluLayer('Name', 'relu1')
+    maxPooling2dLayer(2, 'Stride', 2, 'Name', 'maxpool1')
     
-    convolution2dLayer(3, 32, 'Padding', 'same')
-    batchNormalizationLayer
-    reluLayer
-    maxPooling2dLayer(2, 'Stride', 2)
+    convolution2dLayer(3, 32, 'Padding', 'same', 'Name', 'conv2')
+    batchNormalizationLayer('Name', 'bn2')
+    reluLayer('Name', 'relu2')
+    maxPooling2dLayer(2, 'Stride', 2, 'Name', 'maxpool2')
     
-    convolution2dLayer(3, 64, 'Padding', 'same')
-    batchNormalizationLayer
-    reluLayer
-    maxPooling2dLayer(2, 'Stride', 2)
+    convolution2dLayer(3, 64, 'Padding', 'same', 'Name', 'conv3')
+    batchNormalizationLayer('Name', 'bn3')
+    reluLayer('Name', 'relu3')
+    maxPooling2dLayer(2, 'Stride', 2, 'Name', 'maxpool3')
     
-    fullyConnectedLayer(numel(unique(imds.Labels))) % Number of classes
-    softmaxLayer
-    classificationLayer];
+    % Shared feature extraction layers end here
+    fullyConnectedLayer(128, 'Name', 'fc_shared')
+    reluLayer('Name', 'relu_shared')
+];
+
+% Classification branch
+classHead = [
+    fullyConnectedLayer(numClasses, 'Name', 'fc_classification')
+    softmaxLayer('Name', 'softmax')
+    classificationLayer('Name', 'classification_output')
+];
+
+% Regression branch
+regHead = [
+    fullyConnectedLayer(64, 'Name', 'fc_regression')
+    reluLayer('Name', 'relu_regression')
+    fullyConnectedLayer(3, 'Name', 'fc_regression_output') % 3 regression targets (SNR, Jitter, Phase)
+    regressionLayer('Name', 'regression_output')
+];
+
+% Create layer graph from the backbone
+lgraph = layerGraph(backboneLayers);
+
+% Add classification head
+lgraph = addLayers(lgraph, classHead);
+lgraph = connectLayers(lgraph, 'relu_shared', 'fc_classification');
+
+% Add regression head
+lgraph = addLayers(lgraph, regHead);
+lgraph = connectLayers(lgraph, 'relu_shared', 'fc_regression');
 
 % Display the network architecture
 if visualizeNetwork
-    analyzeNetwork(layers);
+    analyzeNetwork(lgraph);
 end
 
 %% Train the Network
-options = trainingOptions('adam', ...
-    'MiniBatchSize', 32, ...
-    'MaxEpochs', 2, ...
-    'InitialLearnRate', 1e-3, ...
-    'Shuffle', 'every-epoch', ...
-    'ValidationData', imdsValid, ...
-    'ValidationFrequency', 10, ...
-    'Verbose', false, ...
-    'Plots', 'training-progress');
+% Initialize the network and training options
+net = dlnetwork(backboneLayers); % Correct network initialization
 
-net = trainNetwork(imdsTrain, layers, options);
+% Training parameters
+numEpochs = 5;
+miniBatchSize = 32;
+numObservations = numel(imds.Files);
+numIterationsPerEpoch = floor(numObservations / miniBatchSize);
 
-%% Evaluate 
-% Classify validation images 
-predictedLabels = classify(net, imdsValid);
-trueLabels = imdsValid.Labels;
+% Prepare for training
+mbq = minibatchqueue(combTrainDs, ...
+    'MiniBatchSize', miniBatchSize, ...
+    'MiniBatchFcn', @(images, metadata) preprocessMiniBatch(images, metadata), ...
+    'MiniBatchFormat', {'SSCB', ''}, ...   % Image data and regression labels
+    'OutputAsDlarray', [true, false], ...  % Convert images to dlarray, keep regression labels as regular arrays
+    'OutputCast', {'double', 'double'});   % Ensure both outputs are cast to double
+
+% Initialize figure for tracking loss
+figure;
+classificationLossPlot = animatedline('Color', 'b', 'DisplayName', 'Classification Loss');
+regressionLossPlot = animatedline('Color', 'r', 'DisplayName', 'Regression Loss');
+totalLossPlot = animatedline('Color', 'g', 'DisplayName', 'Total Loss');
+legend;
+
+xlabel('Iteration');
+ylabel('Loss');
+title('Training Progress');
+grid on;
+
+% Training loop
+for epoch = 1:numEpochs
+    shuffle(mbq);
+
+    for iteration = 1:numIterationsPerEpoch
+        % Read mini-batch
+        [X, YClassification, YRegression] = next(mbq);
+        % YClassification = Y(:,1);
+        % YRegression = Y(:,2:end);
+        [loss, gradients, classLoss, regLoss] = dlfeval(@modelGradients, net, X, YClassification, YRegression);
+
+        % Update the plots
+        addpoints(classificationLossPlot, iteration, double(classLoss));
+        addpoints(regressionLossPlot, iteration, double(regLoss));
+        addpoints(totalLossPlot, iteration, double(loss));
+
+        % Update the figure
+        drawnow;
+
+        % Forward and compute loss
+        [loss, gradients] = dlfeval(@modelGradients, net, X, YClassification, YRegression);
+
+        % Update parameters
+        net = adamupdate(net, gradients, learnRate, gradientDecay, squaredGradientDecay);
+    end
+
+    % Display progress
+    fprintf('Epoch %d: Loss = %.4f\n', epoch, loss);
+end
+
+%% Evaluate Classification
+[YPredClass, ~] = classify(net, imdsValid); % Classification predictions
+YTrueClass = imdsValid.Labels;              % True labels
 
 % Calculate accuracy
-accuracy = mean(predictedLabels == trueLabels);
+accuracy = mean(YPredClass == YTrueClass);
 fprintf('Validation Accuracy: %.2f%%\n', accuracy * 100);
 
-% Create Confusion matrix
-confMat = confusionmat(trueLabels, predictedLabels);
-confusionchart(trueLabels, predictedLabels);
+% Confusion Matrix
+confMat = confusionmat(YTrueClass, YPredClass);
+confusionchart(YTrueClass, YPredClass, 'Title', 'Confusion Matrix');
 
-disp('Confusion Matrix:');
-disp(confMat);
+%% Evaluate Regression
+% Extract regression predictions
+YPredReg = predict(net, imdsValid); % Regression predictions
+YTrueReg = metadataTable{validationIndices, {'SNR', 'Jitter', 'Phase'}}; % True regression targets
+
+% Compute Mean Squared Error (MSE)
+mseValue = mean((YPredReg - YTrueReg).^2, 'all');
+fprintf('Validation MSE: %.4f\n', mseValue);
+
+% Plot regression results for each target
+targetNames = {'SNR', 'Jitter', 'Phase'};
+for i = 1:size(YPredReg, 2)
+    figure;
+    scatter(YTrueReg(:, i), YPredReg(:, i), 'b.');
+    hold on;
+    plot([min(YTrueReg(:, i)), max(YTrueReg(:, i))], ...
+         [min(YTrueReg(:, i)), max(YTrueReg(:, i))], 'r--'); % Ideal fit line
+    hold off;
+    xlabel(sprintf('True %s', targetNames{i}));
+    ylabel(sprintf('Predicted %s', targetNames{i}));
+    title(sprintf('Regression Results for %s', targetNames{i}));
+    grid on;
+end
+
+%% Helper Functions
+function [X, YClassification, YRegression] = preprocessMiniBatch(images, targets)
+    % Initialize empty array to hold resized images
+    concatImages = [];
+
+    % Resize each image individually
+    for i = 1:numel(images)
+        img = images{i};
+        % Append resized image to array
+        concatImages = cat(4, concatImages, img);
+    end
+
+    % Convert the resized images to a 4D array (height x width x channels x batch)
+    X = concatImages;
+
+    % Convert labels to categorical for classification
+    YClassification = onehotencode(targets(:, 1), 2); % Assuming the first column is class
+    % Extract regression targets (SNR, Jitter, Phase)
+    YRegression = targets(:, 2:end); % Numeric values
+end
+
+function [loss, gradients, classLoss, regLoss] = modelGradients(net, X, YClassification, YRegression)
+    % Forward pass through the network
+    [YPredClass, YPredReg] = forward(net, X);
+
+    % Compute classification loss (cross-entropy)
+    classLoss = crossentropy(YPredClass, YClassification);
+
+    % Compute regression loss (mean squared error)
+    regLoss = mean((YPredReg - YRegression).^2, 'all');
+
+    % Total loss (weighted sum of classification and regression losses)
+    loss = classLoss + regLoss;
+
+    % Compute gradients (backpropagation)
+    gradients = dlgradient(loss, net.Learnables);
+end
