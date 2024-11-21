@@ -19,8 +19,8 @@ if ~exist(datasetDir, 'dir')
 end
 
 %% Create the Datastores
-imds = imageDatastore(datasetDir,"IncludeSubfolders",true, "LabelSource","foldernames");
-imds.Labels = categorical(cellfun(@(x) regexp(x, strjoin(classes, '|'), 'match', 'once'), cellstr(imds.Files), 'UniformOutput', false));
+imgDs = imageDatastore(datasetDir,"IncludeSubfolders",true, "LabelSource","foldernames");
+imgDs.Labels = categorical(cellfun(@(x) regexp(x, strjoin(classes, '|'), 'match', 'once'), cellstr(imgDs.Files), 'UniformOutput', false));
 
 % Define the regular expression patterns to extract SNR, phase rotation,
 % and jitter
@@ -29,14 +29,14 @@ jitterPattern = 'Jitter_([0-9.]+)';
 phasePattern = 'Phase_([-0-9.]+)';
 
 % Initialize an array to store SNR values
-numSamp = numel(imds.Files);
+numSamp = numel(imgDs.Files);
 snrValues = NaN(numSamp, 1);
 jitterValues = NaN(numSamp, 1);
 phaseValues = NaN(numSamp, 1);
 
 % Extract the metadata from the filepaths
 for i = 1:numSamp
-    filePath = imds.Files{i};
+    filePath = imgDs.Files{i};
     
     % SNR 
     snrMatch = regexp(filePath, snrPattern, 'tokens', 'once');
@@ -58,34 +58,35 @@ for i = 1:numSamp
 end
 
 % Combine all metadata
-metadataTable = table(imds.Files, imds.Labels, snrValues, jitterValues, phaseValues, 'VariableNames', {'FilePath', 'Label', 'SNR', 'Jitter', 'Phase'});
+metadataTable = table(imgDs.Files, onehotencode(imgDs.Labels, 2), snrValues, jitterValues, phaseValues, 'VariableNames', {'FilePath', 'Label', 'SNR', 'Jitter', 'Phase'});
 
 %% Combined Datastore
-% Split images datastore
-[imdsTrain, imdsValid] = splitEachLabel(imds, 0.8, 'randomized');
+% Create Image datastore (outputs images)
+[imgDsTrain, imgDsValid] = splitEachLabel(imgDs, 0.8, 'randomized');
 
 % Split the metadata based on the indices
-trainMetadata = metadataTable(1:round(0.8 * height(metadataTable)), :);
-validMetadata = metadataTable(round(0.8 * height(metadataTable)) + 1:end, :);
+metadataTrain = metadataTable(1:round(0.8 * height(metadataTable)), :);
+metadataValid = metadataTable(round(0.8 * height(metadataTable)) + 1:end, :);
 
-trainMetadata.Label = double(trainMetadata.Label);
-validMetadata.Label = double(validMetadata.Label);
+% Create Label Datastore (outputs categorical labels)
+labelDsTrain = arrayDatastore(metadataTrain{:, {'Label'}});
+labelDsValid = arrayDatastore(metadataValid{:, {'Label'}});
 
-% Create array datastores for metadata
-trainMetadataDs = arrayDatastore(trainMetadata{:, {'Label', 'SNR', 'Jitter', 'Phase'}});
-validMetadataDs = arrayDatastore(validMetadata{:, {'Label', 'SNR', 'Jitter', 'Phase'}});
+% Create Regression Datastore (outputs SNR, Jitter, and Phase)
+regDsTrain = arrayDatastore(metadataTrain{:, {'SNR', 'Jitter', 'Phase'}});
+regDsValid = arrayDatastore(metadataValid{:, {'SNR', 'Jitter', 'Phase'}});
 
 % Combine imageDatastore and metadata datastore
-combTrainDs = combine(imdsTrain, trainMetadataDs);
-combValidDs = combine(imdsValid, validMetadataDs);
+combDsTrain = combine(imgDsTrain, labelDsTrain, regDsTrain);
+combDsValid = combine(imgDsValid, labelDsValid, regDsValid);
 
 %% Define CNN Architecture
-inputSize = [size(readimage(imdsTrain,1),1), size(readimage(imdsTrain,1),2), 1]; % Adjust based on image size
-numClasses = numel(unique(imds.Labels));
+imgSize = [size(readimage(imgDsTrain,1),1), size(readimage(imgDsTrain,1),2), 1]; % Adjust based on image size
+numClasses = numel(unique(imgDs.Labels));
 
 % Two-headed CNN architecture for classification and regression
 backboneLayers = [
-    imageInputLayer(inputSize, 'Name', 'input')
+    imageInputLayer(imgSize, 'Name', 'input')
     convolution2dLayer(3, 16, 'Padding', 'same', 'Name', 'conv1')
     batchNormalizationLayer('Name', 'bn1')
     reluLayer('Name', 'relu1')
@@ -138,22 +139,22 @@ if visualizeNetwork
 end
 
 %% Train the Network
-% Initialize the network and training options
+% Initialize the network
 net = dlnetwork(backboneLayers); % Correct network initialization
 
 % Training parameters
 numEpochs = 5;
 miniBatchSize = 32;
-numObservations = numel(imds.Files);
+numObservations = numel(imgDs.Files);
 numIterationsPerEpoch = floor(numObservations / miniBatchSize);
 
 % Prepare for training
-mbq = minibatchqueue(combTrainDs, ...
+mbq = minibatchqueue(combDsTrain, ...
     'MiniBatchSize', miniBatchSize, ...
-    'MiniBatchFcn', @(images, metadata) preprocessMiniBatch(images, metadata), ...
-    'MiniBatchFormat', {'SSCB', ''}, ...   % Image data and regression labels
-    'OutputAsDlarray', [true, false], ...  % Convert images to dlarray, keep regression labels as regular arrays
-    'OutputCast', {'double', 'double'});   % Ensure both outputs are cast to double
+    'MiniBatchFcn', @(images, labels, regTarget) preprocessMiniBatch(images, labels, regTarget), ...
+    'MiniBatchFormat', {'SSCB', '', ''}, ...            % Image data, labels, and regression targets
+    'OutputAsDlarray', [true, true, true], ...          % Convert all to dlarray for GPU
+    'OutputEnvironment', ["auto", "auto", "auto"]);     % Ensure compatibility with GPU
 
 % Initialize figure for tracking loss
 figure;
@@ -198,8 +199,8 @@ for epoch = 1:numEpochs
 end
 
 %% Evaluate Classification
-[YPredClass, ~] = classify(net, imdsValid); % Classification predictions
-YTrueClass = imdsValid.Labels;              % True labels
+[YPredClass, ~] = classify(net, imgDsValid); % Classification predictions
+YTrueClass = imgDsValid.Labels;              % True labels
 
 % Calculate accuracy
 accuracy = mean(YPredClass == YTrueClass);
@@ -211,7 +212,7 @@ confusionchart(YTrueClass, YPredClass, 'Title', 'Confusion Matrix');
 
 %% Evaluate Regression
 % Extract regression predictions
-YPredReg = predict(net, imdsValid); % Regression predictions
+YPredReg = predict(net, imgDsValid); % Regression predictions
 YTrueReg = metadataTable{validationIndices, {'SNR', 'Jitter', 'Phase'}}; % True regression targets
 
 % Compute Mean Squared Error (MSE)
@@ -234,25 +235,24 @@ for i = 1:size(YPredReg, 2)
 end
 
 %% Helper Functions
-function [X, YClassification, YRegression] = preprocessMiniBatch(images, targets)
-    % Initialize empty array to hold resized images
+function [X, YClassification, YRegression] = preprocessMiniBatch(images, labels, regTarget)
+    % Convert images to a 4D array
     concatImages = [];
-
-    % Resize each image individually
     for i = 1:numel(images)
         img = images{i};
-        % Append resized image to array
         concatImages = cat(4, concatImages, img);
     end
+    
+    % Single is friendly to DNNs
+    X = single(concatImages); 
+    
+    % Unpack labels from cell and convert to double
+    YClassification = cell2mat(labels);
 
-    % Convert the resized images to a 4D array (height x width x channels x batch)
-    X = concatImages;
-
-    % Convert labels to categorical for classification
-    YClassification = onehotencode(targets(:, 1), 2); % Assuming the first column is class
-    % Extract regression targets (SNR, Jitter, Phase)
-    YRegression = targets(:, 2:end); % Numeric values
+    % Unpack regression targets from cell
+    YRegression = cell2mat(regTarget);
 end
+
 
 function [loss, gradients, classLoss, regLoss] = modelGradients(net, X, YClassification, YRegression)
     % Forward pass through the network
