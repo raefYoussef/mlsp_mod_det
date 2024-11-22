@@ -9,8 +9,8 @@ classes = {'PSK-02', 'PSK-04', 'PSK-08', 'QAM-08', 'QAM-16', 'QAM-32', 'QAM-64'}
 visualizeNetwork = false;
 
 %% Generate Dataset (Optional if dataset exists)
-numSamplesPerClass = 300;
-snrRange = [0 40];
+numSamplesPerClass = 1000;
+snrRange = [25 40];
 phaseRotRange = [-pi/2, pi/2];
 jitterStdRange = [0 .05];
 
@@ -138,19 +138,18 @@ end
 
 %% Train the Network
 % Initialize the network
-net = dlnetwork(lgraph); % Correct network initialization
+net = dlnetwork(lgraph); 
 
 % Training parameters
 learnRate = 0.001;              % Initial learning rate
 gradientDecay = 0.9;            % Gradient decay rate for Adam
 squaredGradientDecay = 0.999;   % Squared gradient decay rate for Adam
 
-numEpochs = 5;
-miniBatchSize = 32;
-numSamp = numel(imgDs.Files);
-numIterPerEpoch = floor(numSamp / miniBatchSize);
+numEpochs = 10;
+miniBatchSize = 64;
+valFreq = 10;
 
-% Prepare for training
+% Process minibatch for training
 mbq = minibatchqueue(combDsTrain, ...
     'MiniBatchSize', miniBatchSize, ...
     'MiniBatchFcn', @(images, labels, regTarget) preprocessMiniBatch(images, labels, regTarget), ...
@@ -158,52 +157,72 @@ mbq = minibatchqueue(combDsTrain, ...
     'OutputAsDlarray', [true, true, true], ...          % Convert all to dlarray for GPU
     'OutputEnvironment', ["auto", "auto", "auto"]);     % Ensure compatibility with GPU
 
-% Initialize figure for tracking loss
-figure;
-classificationLossPlot = animatedline('Color', 'b', 'DisplayName', 'Classification Loss');
-regressionLossPlot = animatedline('Color', 'r', 'DisplayName', 'Regression Loss');
-totalLossPlot = animatedline('Color', 'g', 'DisplayName', 'Total Loss');
-legend;
-
-xlabel('Iteration');
-ylabel('Loss');
-title('Training Progress');
-grid on;
-
 % Training loop
 averageGrad = [];
 averageSqGrad = [];
-% monitor = trainingProgressMonitor(Metrics="Loss",Info="Epoch",XLabel="Iteration");
 
-for epoch = 1:numEpochs
+% Initialize the training progress monitor
+monitor = trainingProgressMonitor(Metrics=["TrainLoss", "ValidLoss", ...
+    "TrainClassLoss", "ValidClassLoss", "TrainRegLoss", "ValidRegLoss"], ...
+    Info="Epoch", XLabel="Iteration");
+
+% Overlay related metrics on the same subplot
+groupSubPlot(monitor, "Loss", ["TrainLoss", "ValidLoss"]);
+groupSubPlot(monitor, "Classification Loss", ["TrainClassLoss", "ValidClassLoss"]);
+groupSubPlot(monitor, "Regression Loss", ["TrainRegLoss", "ValidRegLoss"]);
+
+numSamp = numel(imgDsTrain.Files);
+numIterPerEpoch = floor(numSamp / miniBatchSize);
+numIter = numEpochs * numIterPerEpoch;
+iter = 0;
+epoch = 0;
+
+while epoch < numEpochs && ~monitor.Stop
+    epoch = epoch + 1;
+
     % Shuffle the mini-batch queue
     shuffle(mbq);
 
     % Initialize cumulative loss for the epoch
     totalEpochLoss = 0;
 
-    for iteration = 1:numIterPerEpoch
+    i = 0;
+    while i < numIterPerEpoch && ~monitor.Stop
+        i = i + 1;
+        iter = iter + 1;
+        
         % Read a mini-batch
         [X, YClassification, YRegression] = next(mbq);
 
         % Perform forward and backward passes using dlfeval
-        [loss, gradients, classLoss, regLoss, state] = dlfeval(@modelGradients, net, X, YClassification, YRegression);
+        [trainLoss, gradients, trainClassLoss, trainRegLoss, state] = dlfeval(@modelGradients, net, X, YClassification, YRegression);
         net.State = state;
 
         % Update the network parameters using the Adam optimizer.
-        [net, averageGrad, averageSqGrad] = adamupdate(net, gradients, averageGrad, averageSqGrad, iteration, learnRate, gradientDecay, squaredGradientDecay);
+        [net, averageGrad, averageSqGrad] = adamupdate(net, gradients, averageGrad, averageSqGrad, iter, learnRate, gradientDecay, squaredGradientDecay);
         
         % Update the total loss for tracking
-        totalEpochLoss = totalEpochLoss + double(loss);
+        totalEpochLoss = totalEpochLoss + double(trainLoss);
 
-        % Update loss plots
-        iterationNum = (epoch - 1) * numIterPerEpoch + iteration;
-        addpoints(classificationLossPlot, iterationNum, double(classLoss));
-        addpoints(regressionLossPlot, iterationNum, double(regLoss));
-        addpoints(totalLossPlot, iterationNum, double(loss));
+        % Perform validation at the specified frequency
+        if mod(iter, valFreq) == 0
+            [YClassTrue, YClassPred, YRegTrue, YRegPred] = performValidation(net, combDsValid);
 
-        % Refresh plot
-        drawnow;
+            % Compute Losses
+            validClassLoss = crossentropy(YClassPred, YClassTrue);
+            validRegLoss = mean((YRegPred - YRegTrue).^2, 'all');
+            validLoss = validClassLoss + validRegLoss;
+        
+            % Record validation metrics in the monitor
+            recordMetrics(monitor,iter, ValidLoss=validLoss, ValidClassLoss=validClassLoss, ValidRegLoss=validRegLoss);
+        else
+            
+        end
+
+        % Update the training progress monitor.
+        recordMetrics(monitor,iter, TrainLoss=trainLoss, TrainClassLoss=trainClassLoss, TrainRegLoss=trainRegLoss);
+        updateInfo(monitor,Epoch=epoch + " of " + numEpochs);
+        monitor.Progress = 100 * iter/numIter;
     end
 
     % Display average loss for the epoch
@@ -211,35 +230,38 @@ for epoch = 1:numEpochs
     fprintf('Epoch %d/%d: Avg Loss = %.4f\n', epoch, numEpochs, avgLoss);
 end
 
-%% Evaluate Classification
-[YPredClass, ~] = classify(net, imgDsValid); % Classification predictions
-YTrueClass = imgDsValid.Labels;              % True labels
+%% Evaluate Train Dataset
+[YClassTrue, YClassPred, YRegTrue, YRegPred] = performValidation(net, combDsValid);
+
+%% Eval Classification
+% Convert predicted probabilities to class labels
+[~, classIdx] = max(YClassPred, [], 1);
+YClassPred = categorical(classes(classIdx));
+
+% Get true class labels
+YClassTrue = (imgDsValid.Labels).';
 
 % Calculate accuracy
-accuracy = mean(YPredClass == YTrueClass);
+accuracy = mean(YClassPred == YClassTrue);
 fprintf('Validation Accuracy: %.2f%%\n', accuracy * 100);
 
 % Confusion Matrix
-confMat = confusionmat(YTrueClass, YPredClass);
-confusionchart(YTrueClass, YPredClass, 'Title', 'Confusion Matrix');
+confMat = confusionmat(YClassTrue, YClassPred);
+confusionchart(YClassTrue, YClassPred, 'Title', 'Confusion Matrix');
 
-%% Evaluate Regression
-% Extract regression predictions
-YPredReg = predict(net, imgDsValid); % Regression predictions
-YTrueReg = metadataTable{validationIndices, {'SNR', 'Jitter', 'Phase'}}; % True regression targets
-
+%% Eval Regression
 % Compute Mean Squared Error (MSE)
-mseValue = mean((YPredReg - YTrueReg).^2, 'all');
+mseValue = mean((YRegPred - YRegTrue).^2, 'all');
 fprintf('Validation MSE: %.4f\n', mseValue);
 
 % Plot regression results for each target
 targetNames = {'SNR', 'Jitter', 'Phase'};
-for i = 1:size(YPredReg, 2)
+for i = 1:size(YRegPred, 1)
     figure;
-    scatter(YTrueReg(:, i), YPredReg(:, i), 'b.');
+    scatter(YRegTrue(i, :), YRegPred(i, :), 'b.');
     hold on;
-    plot([min(YTrueReg(:, i)), max(YTrueReg(:, i))], ...
-         [min(YTrueReg(:, i)), max(YTrueReg(:, i))], 'r--'); % Ideal fit line
+    plot([min(YRegTrue(i, :)), max(YRegTrue(i, :))], ...
+         [min(YRegTrue(i, :)), max(YRegTrue(i, :))], 'r--'); % Ideal fit line
     hold off;
     xlabel(sprintf('True %s', targetNames{i}));
     ylabel(sprintf('Predicted %s', targetNames{i}));
@@ -283,3 +305,31 @@ function [loss, gradients, classLoss, regLoss, state] = modelGradients(net, X, Y
     % Compute gradients (backpropagation)
     gradients = dlgradient(loss, net.Learnables);
 end
+
+function [YClassTrue, YClassPred, YRegTrue, YRegPred] = performValidation(net, combDsValid)
+    numSamp = combDsValid.numpartitions;
+    sampPrev = preview(combDsValid);
+    numClasses = size(cell2mat(sampPrev(2)), 2);
+    numRegVars = size(cell2mat(sampPrev(3)), 2);
+
+    YClassPred = zeros(numClasses, numSamp);
+    YClassTrue = zeros(numClasses, numSamp);
+
+    YRegPred = zeros(numRegVars, numSamp);
+    YRegTrue = zeros(numRegVars, numSamp);
+
+    % Evaluate Classification
+    reset(combDsValid); 
+    i = 1;
+    while hasdata(combDsValid)
+        batch = read(combDsValid);
+        % pre-process batch
+        img = dlarray(single(batch{1}), 'SSCB');
+        YClassTrue(:, i) = batch{2}.';
+        YRegTrue(:, i) = batch{3}.';
+        % forward pass
+        [YClassPred(:, i), YRegPred(:, i)] = predict(net, img); 
+        i = i+1;
+    end
+end
+

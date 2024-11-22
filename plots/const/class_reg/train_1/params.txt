@@ -1,0 +1,4 @@
+numSamplesPerClass = 1000;
+snrRange = [25 40];
+phaseRotRange = [-pi/2, pi/2];
+jitterStdRange = [0 .05];
