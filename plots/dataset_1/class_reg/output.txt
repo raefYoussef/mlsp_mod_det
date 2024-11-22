@@ -1,0 +1,12 @@
+Epoch 1/10: Avg Loss = 8.0973
+Epoch 2/10: Avg Loss = 2.5595
+Epoch 3/10: Avg Loss = 2.2454
+Epoch 4/10: Avg Loss = 1.5792
+Epoch 5/10: Avg Loss = 1.2195
+Epoch 6/10: Avg Loss = 1.1403
+Epoch 7/10: Avg Loss = 0.9937
+Epoch 8/10: Avg Loss = 0.9457
+Epoch 9/10: Avg Loss = 0.8292
+Epoch 10/10: Avg Loss = 0.7500
+Validation Accuracy: 88.86%
+Validation MSE: 0.6035
