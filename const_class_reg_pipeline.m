@@ -8,9 +8,9 @@ classes = {'PSK-02', 'PSK-04', 'PSK-08', 'QAM-08', 'QAM-16', 'QAM-32', 'QAM-64'}
 
 visualizeNetwork = false;
 
-%% Generate Dataset (Optional if dataset exists)
+%% Generate Dataset
 numSamplesPerClass = 1000;
-snrRange = [25 40];
+snrRange = [0 40];
 phaseRotRange = [-pi/2, pi/2];
 jitterStdRange = [0 .05];
 
