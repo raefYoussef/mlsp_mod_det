@@ -61,12 +61,19 @@ end
 metadataTable = table(imgDs.Files, onehotencode(imgDs.Labels, 2), snrValues, jitterValues, phaseValues, 'VariableNames', {'FilePath', 'Label', 'SNR', 'Jitter', 'Phase'});
 
 %% Combined Datastore
-% Create Image datastore (outputs images)
-[imgDsTrain, imgDsValid] = splitEachLabel(imgDs, 0.8, 'randomized');
+trainSplit = .8;
+
+numTrain = round(trainSplit * numSamp);
+randIndices = randperm(numSamp);
+trainIndx = randIndices(1:numTrain);
+validIndx = randIndices(numTrain+1:end);
 
 % Split the metadata based on the indices
-metadataTrain = metadataTable(1:round(0.8 * height(metadataTable)), :);
-metadataValid = metadataTable(round(0.8 * height(metadataTable)) + 1:end, :);
+imgDsTrain = subset(imgDs, trainIndx);
+imgDsValid = subset(imgDs, validIndx);
+
+metadataTrain = metadataTable(trainIndx, :);
+metadataValid = metadataTable(validIndx, :);
 
 % Create Label Datastore (outputs categorical labels)
 labelDsTrain = arrayDatastore(metadataTrain{:, {'Label'}});
@@ -146,7 +153,7 @@ gradientDecay = 0.9;            % Gradient decay rate for Adam
 squaredGradientDecay = 0.999;   % Squared gradient decay rate for Adam
 
 numEpochs = 10;
-miniBatchSize = 64;
+miniBatchSize = 32;
 valFreq = 10;
 
 % Process minibatch for training
