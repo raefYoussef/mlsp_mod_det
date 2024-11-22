@@ -111,7 +111,6 @@ backboneLayers = [
 classHead = [
     fullyConnectedLayer(numClasses, 'Name', 'fc_classification')
     softmaxLayer('Name', 'softmax')
-    classificationLayer('Name', 'classification_output')
 ];
 
 % Regression branch
@@ -119,7 +118,6 @@ regHead = [
     fullyConnectedLayer(64, 'Name', 'fc_regression')
     reluLayer('Name', 'relu_regression')
     fullyConnectedLayer(3, 'Name', 'fc_regression_output') % 3 regression targets (SNR, Jitter, Phase)
-    regressionLayer('Name', 'regression_output')
 ];
 
 % Create layer graph from the backbone
@@ -140,13 +138,17 @@ end
 
 %% Train the Network
 % Initialize the network
-net = dlnetwork(backboneLayers); % Correct network initialization
+net = dlnetwork(lgraph); % Correct network initialization
 
 % Training parameters
+learnRate = 0.001;              % Initial learning rate
+gradientDecay = 0.9;            % Gradient decay rate for Adam
+squaredGradientDecay = 0.999;   % Squared gradient decay rate for Adam
+
 numEpochs = 5;
 miniBatchSize = 32;
-numObservations = numel(imgDs.Files);
-numIterationsPerEpoch = floor(numObservations / miniBatchSize);
+numSamp = numel(imgDs.Files);
+numIterPerEpoch = floor(numSamp / miniBatchSize);
 
 % Prepare for training
 mbq = minibatchqueue(combDsTrain, ...
@@ -169,33 +171,44 @@ title('Training Progress');
 grid on;
 
 % Training loop
+averageGrad = [];
+averageSqGrad = [];
+% monitor = trainingProgressMonitor(Metrics="Loss",Info="Epoch",XLabel="Iteration");
+
 for epoch = 1:numEpochs
+    % Shuffle the mini-batch queue
     shuffle(mbq);
 
-    for iteration = 1:numIterationsPerEpoch
-        % Read mini-batch
+    % Initialize cumulative loss for the epoch
+    totalEpochLoss = 0;
+
+    for iteration = 1:numIterPerEpoch
+        % Read a mini-batch
         [X, YClassification, YRegression] = next(mbq);
-        % YClassification = Y(:,1);
-        % YRegression = Y(:,2:end);
-        [loss, gradients, classLoss, regLoss] = dlfeval(@modelGradients, net, X, YClassification, YRegression);
 
-        % Update the plots
-        addpoints(classificationLossPlot, iteration, double(classLoss));
-        addpoints(regressionLossPlot, iteration, double(regLoss));
-        addpoints(totalLossPlot, iteration, double(loss));
+        % Perform forward and backward passes using dlfeval
+        [loss, gradients, classLoss, regLoss, state] = dlfeval(@modelGradients, net, X, YClassification, YRegression);
+        net.State = state;
 
-        % Update the figure
+        % Update the network parameters using the Adam optimizer.
+        [net, averageGrad, averageSqGrad] = adamupdate(net, gradients, averageGrad, averageSqGrad, iteration, learnRate, gradientDecay, squaredGradientDecay);
+        
+        % Update the total loss for tracking
+        totalEpochLoss = totalEpochLoss + double(loss);
+
+        % Update loss plots
+        iterationNum = (epoch - 1) * numIterPerEpoch + iteration;
+        addpoints(classificationLossPlot, iterationNum, double(classLoss));
+        addpoints(regressionLossPlot, iterationNum, double(regLoss));
+        addpoints(totalLossPlot, iterationNum, double(loss));
+
+        % Refresh plot
         drawnow;
-
-        % Forward and compute loss
-        [loss, gradients] = dlfeval(@modelGradients, net, X, YClassification, YRegression);
-
-        % Update parameters
-        net = adamupdate(net, gradients, learnRate, gradientDecay, squaredGradientDecay);
     end
 
-    % Display progress
-    fprintf('Epoch %d: Loss = %.4f\n', epoch, loss);
+    % Display average loss for the epoch
+    avgLoss = totalEpochLoss / numIterPerEpoch;
+    fprintf('Epoch %d/%d: Avg Loss = %.4f\n', epoch, numEpochs, avgLoss);
 end
 
 %% Evaluate Classification
@@ -247,16 +260,16 @@ function [X, YClassification, YRegression] = preprocessMiniBatch(images, labels,
     X = single(concatImages); 
     
     % Unpack labels from cell and convert to double
-    YClassification = cell2mat(labels);
+    YClassification = cell2mat(labels).';
 
     % Unpack regression targets from cell
-    YRegression = cell2mat(regTarget);
+    YRegression = cell2mat(regTarget).';
 end
 
 
-function [loss, gradients, classLoss, regLoss] = modelGradients(net, X, YClassification, YRegression)
+function [loss, gradients, classLoss, regLoss, state] = modelGradients(net, X, YClassification, YRegression)
     % Forward pass through the network
-    [YPredClass, YPredReg] = forward(net, X);
+    [YPredClass, YPredReg, state] = forward(net, X);
 
     % Compute classification loss (cross-entropy)
     classLoss = crossentropy(YPredClass, YClassification);
