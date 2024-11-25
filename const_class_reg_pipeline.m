@@ -6,7 +6,8 @@ clear;
 datasetDir = "dataset";
 classes = {'PSK-02', 'PSK-04', 'PSK-08', 'QAM-08', 'QAM-16', 'QAM-32', 'QAM-64'};
 
-visualizeNetwork = false;
+visualizeNetwork = true;    % Flag to visualize network
+trainSplit = .8;            % Train/Validation Split Ratio (i.e. 80% Train / 20% Validation)
 
 %% Generate Dataset
 numSamplesPerClass = 1000;
@@ -22,13 +23,12 @@ end
 imgDs = imageDatastore(datasetDir,"IncludeSubfolders",true, "LabelSource","foldernames");
 imgDs.Labels = categorical(cellfun(@(x) regexp(x, strjoin(classes, '|'), 'match', 'once'), cellstr(imgDs.Files), 'UniformOutput', false));
 
-% Define the regular expression patterns to extract SNR, phase rotation,
-% and jitter
+% Define the regular expression patterns to extract SNR, phase rotation, and jitter
 snrPattern = 'SNR_([0-9.]+)';
 jitterPattern = 'Jitter_([0-9.]+)';
 phasePattern = 'Phase_([-0-9.]+)';
 
-% Initialize an array to store SNR values
+% Initialize an array to store regression targets
 numSamp = numel(imgDs.Files);
 snrValues = NaN(numSamp, 1);
 jitterValues = NaN(numSamp, 1);
@@ -61,8 +61,6 @@ end
 metadataTable = table(imgDs.Files, onehotencode(imgDs.Labels, 2), snrValues, jitterValues, phaseValues, 'VariableNames', {'FilePath', 'Label', 'SNR', 'Jitter', 'Phase'});
 
 %% Combined Datastore
-trainSplit = .8;
-
 numTrain = round(trainSplit * numSamp);
 randIndices = randperm(numSamp);
 trainIndx = randIndices(1:numTrain);
@@ -138,15 +136,15 @@ lgraph = connectLayers(lgraph, 'relu_shared', 'fc_classification');
 lgraph = addLayers(lgraph, regHead);
 lgraph = connectLayers(lgraph, 'relu_shared', 'fc_regression');
 
-% Display the network architecture
-if visualizeNetwork
-    analyzeNetwork(lgraph);
-end
-
-%% Train the Network
 % Initialize the network
 net = dlnetwork(lgraph); 
 
+% Display the network architecture
+if visualizeNetwork
+    analyzeNetwork(net);
+end
+
+%% Train the Network
 % Training parameters
 learnRate = 0.001;              % Initial learning rate
 gradientDecay = 0.9;            % Gradient decay rate for Adam
